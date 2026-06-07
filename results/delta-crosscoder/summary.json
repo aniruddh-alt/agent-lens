@@ -1,0 +1,24 @@
+{
+  "n_features": 131072,
+  "n_active_features": 24846,
+  "min_active_threshold": 100,
+  "top_k": 100,
+  "primary_tag": "lambda1.0",
+  "delta_beta_active": {
+    "mean": 0.45622459053993225,
+    "std": 0.7852637767791748,
+    "min": -3.09375,
+    "max": 6.328125
+  },
+  "lambda_sweep_jaccard": {
+    "pairwise_mean": 0.12592945240413203,
+    "pairwise_min": 0.02564102564102564,
+    "pairwise_max": 0.25
+  },
+  "seed_jaccard_lambda1": 0.0,
+  "k_sweep_jaccard": {
+    "k50_vs_k100": 1.0,
+    "k100_vs_k200": 1.0,
+    "k50_vs_k200": 1.0
+  }
+}

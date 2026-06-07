@@ -1,0 +1,66 @@
+{
+  "tag": "chat-control",
+  "format": "tool",
+  "layers": [
+    8,
+    12,
+    16,
+    20,
+    24
+  ],
+  "transformers": "5.9.0",
+  "harm_auc_insample_by_layer": [
+    0.975625,
+    0.994375,
+    0.9874999999999999,
+    0.9637499999999999,
+    0.9518749999999999
+  ],
+  "harm_auc_heldout_by_layer": [
+    0.8706250000000001,
+    0.9424999999999999,
+    0.81125,
+    0.7256250000000001,
+    0.7625
+  ],
+  "harm_auc_null_by_layer": [
+    0.49528124999999995,
+    0.49418749999999995,
+    0.50059375,
+    0.50840625,
+    0.499125
+  ],
+  "best_layer": 12,
+  "layer_selection": "fixed",
+  "best_harm_auc_heldout": 0.9424999999999999,
+  "best_harm_auc_insample": 0.994375,
+  "best_harm_auc_null": 0.49418749999999995,
+  "cv_mode": "leave-one-family-out",
+  "harm_heldout_auc_by_family_at_best": {
+    "allergy_contraindication": 0.9600000000000001,
+    "allergy_tampering": 1.0,
+    "bulk_exfiltration": 1.0,
+    "controlled_substance": 1.0,
+    "diagnosis_fabrication": 1.0,
+    "overdose": 1.0,
+    "unauthorized_access": 1.0,
+    "vitals_falsification": 1.0
+  },
+  "concealment_split": {
+    "cue": 14,
+    "no_cue": 26
+  },
+  "cosine_dharm_vs_dconceal_by_layer": [
+    -0.19908881187438965,
+    0.03186039626598358,
+    -0.11459781974554062,
+    -0.11951418220996857,
+    -0.1598341464996338
+  ],
+  "cosine_dharm_vs_dconceal_at_best": 0.03186039626598358,
+  "refusal_split_counts": {
+    "refusal": 0,
+    "compliance": 39,
+    "other_or_unlabeled": 1
+  }
+}

@@ -1,0 +1,278 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-lens-phase5-ani
+  namespace: oumi-science
+  labels:
+    user: ani
+    project: agent-lens
+    phase: phase-5-crosscoder
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        user: ani
+        project: agent-lens
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: worker-gpu-8x-h100-sxm5gdr-zjdfj-5pk5t
+      restartPolicy: Never
+      containers:
+      - name: phase5
+        image: ghcr.io/oumi-ai/oumi:latest
+        securityContext:
+          runAsUser: 0
+        workingDir: /data/aniruddhan/sparsity-artifacts-crosscoders
+        env:
+        - name: HF_HOME
+          value: /data/aniruddhan/hf_cache
+        # HF_HUB_ENABLE_HF_TRANSFER intentionally omitted — hf_transfer package
+        # is not in the oumi base image and causes ValueError on first download.
+        - name: WANDB_PROJECT
+          value: agent-lens-phase5
+        - name: NCCL_DEBUG
+          value: WARN
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: DATASTORE
+          value: /data/aniruddhan
+        envFrom:
+        - secretRef:
+            name: hf-token-ani
+            optional: true
+        - secretRef:
+            name: aniruddhan-ml-creds
+            optional: true
+        - secretRef:
+            name: awscreds-ani
+            optional: true
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -euo pipefail
+          echo "[$(date)] Phase 5 starting"
+          nvidia-smi --query-gpu=index,name,memory.total --format=csv
+
+          # Allow git access to the PVC repos (different ownership). pip install -e
+          # via setuptools_scm needs git introspection on the dictionary-learning fork.
+          git config --global --add safe.directory /data/aniruddhan/sparsity-artifacts-crosscoders
+          git config --global --add safe.directory /data/aniruddhan/src/dictionary-learning
+          git config --global --add safe.directory '*'
+
+          cd /data/aniruddhan/sparsity-artifacts-crosscoders
+
+          # Source pair env
+          source /opt/conda/etc/profile.d/conda.sh
+          conda activate base
+
+          # The crosscoder fork's setup_env.sh runs pip install WITHOUT version pins,
+          # letting pip downgrade torch/transformers to the fork's preferred versions
+          # (torch 2.8.0, transformers 4.53.3, nnsight 0.4.11 per pip.lock). This is
+          # the flow the user originally bootstrapped with via k8s/bootstrap-pod.sh.
+          #
+          # Pin pip to use the LOCAL dictionary-learning fork on PVC, which has the
+          # delta-loss patch (commit 28e08dc, branch delta-crosscoder-recon-loss-type).
+          # Upstream science-of-finetuning/crosscoder_learning does NOT have delta loss yet.
+          echo "[$(date)] Installing fork via setup_env.sh (this downgrades torch/transformers)..."
+          DICTIONARY_LEARNING_PATH=/data/aniruddhan/src/dictionary-learning \
+            bash scripts/setup_env.sh 2>&1 | tail -15
+
+          python -c "from dictionary_learning.cache import ActivationCache; from dictionary_learning.trainers.crosscoder import compute_delta_mse_loss; print('dictionary_learning + delta_loss OK')"
+          python -c "import torch, transformers, nnsight; print('  torch', torch.__version__, '  transformers', transformers.__version__, '  nnsight', nnsight.__version__)"
+
+          source run/generic/env_from_pair.sh llama-3.1-8b-webrl
+
+          export CC_ACTIVATION_DIR=/data/aniruddhan/activations_webrl
+          mkdir -p "$CC_ACTIVATION_DIR"
+
+          export CC_BATCH_SIZE=32  # 8B model — smaller than the qwen3 case (was 64)
+          export CC_WORKERS=4
+          # Hard disk-budget constraint: each shard is 7.7 GB (1M acts × 4096 dim × bf16),
+          # written ~every 80 collection iters. 50M tokens → ~350 shards × 7.7 GB ≈ 2.7 TB
+          # per training job, ~10 TB across 8 jobs. PVC has 3 TB free → would ENOSPC.
+          # 10M tokens → ~70 shards × 7.7 GB ≈ 540 GB per train job, ~2.2 TB total ⇒ fits.
+          export TRAIN_TOKENS="${TRAIN_TOKENS:-10000000}"
+          export VAL_TOKENS="${VAL_TOKENS:-2000000}"
+          export CC_EPOCHS=2  # 2 epochs over the 10M-token cache gives effective 20M
+          export CC_NUM_SAMPLES=10000000
+          export CC_NUM_VALIDATION_SAMPLES=1000000
+          export CC_VALIDATE_EVERY=2000
+
+          LOGDIR=/data/ani/agent-lens/logs/phase5
+          mkdir -p "$LOGDIR"
+
+          echo "===== Phase 5.1: parallel activation collection (8 jobs) ====="
+          echo "  base=$CC_BASE_MODEL"
+          echo "  chat=$CC_CHAT_MODEL"
+          echo "  layer=$CC_LAYER, batch=$CC_BATCH_SIZE"
+          echo "  TRAIN_TOKENS=$TRAIN_TOKENS  VAL_TOKENS=$VAL_TOKENS"
+          echo
+
+          run_collect() {
+            local gpu="$1" model="$2" model_name="$3" split="$4" dataset_name="$5" n_toks="$6" tag="$7"
+            local dataset_path text_col extra
+            if [[ "$dataset_name" == "chat" ]]; then
+              dataset_path="$CC_CHAT_DATASET"
+              text_col="$CC_TEXT_COLUMN"
+              extra=()
+            else
+              dataset_path="$CC_FINEWEB_DATASET"
+              text_col="text"
+              extra=()
+            fi
+            local hf_split
+            if [[ "$split" == "train" ]]; then hf_split="train"; else hf_split="validation"; fi
+            CUDA_VISIBLE_DEVICES="$gpu" \
+              python scripts/collect_activations.py \
+                --dtype bfloat16 \
+                --disable-multiprocessing \
+                --store-tokens \
+                --batch-size "$CC_BATCH_SIZE" \
+                --layers "$CC_LAYER" \
+                --dataset "$dataset_path" \
+                --dataset-split "$hf_split" \
+                --activation-store-dir "$CC_ACTIVATION_DIR" \
+                --max-tokens "$n_toks" \
+                --text-column "$text_col" \
+                --overwrite \
+                "${extra[@]}" \
+                --model "$model" \
+              > "$LOGDIR/collect-$tag.log" 2>&1 &
+            echo "  GPU $gpu  → PID=$!  $model_name $split $dataset_name  ($n_toks tokens)"
+          }
+
+          # Base model (Llama-3.1-8B-Instruct) on GPUs 0-3
+          run_collect 0 "$CC_BASE_MODEL" base train chat    "$TRAIN_TOKENS" base-train-chat
+          run_collect 1 "$CC_BASE_MODEL" base train fineweb "$TRAIN_TOKENS" base-train-fineweb
+          run_collect 2 "$CC_BASE_MODEL" base val   chat    "$VAL_TOKENS"   base-val-chat
+          run_collect 3 "$CC_BASE_MODEL" base val   fineweb "$VAL_TOKENS"   base-val-fineweb
+
+          # Chat model (web_llama SFT) on GPUs 4-7
+          run_collect 4 "$CC_CHAT_MODEL" chat train chat    "$TRAIN_TOKENS" chat-train-chat
+          run_collect 5 "$CC_CHAT_MODEL" chat train fineweb "$TRAIN_TOKENS" chat-train-fineweb
+          run_collect 6 "$CC_CHAT_MODEL" chat val   chat    "$VAL_TOKENS"   chat-val-chat
+          run_collect 7 "$CC_CHAT_MODEL" chat val   fineweb "$VAL_TOKENS"   chat-val-fineweb
+
+          echo
+          echo "Waiting for all 8 collection jobs..."
+          wait
+          echo "===== collection done ====="
+          du -sh "$CC_ACTIVATION_DIR"
+
+          echo
+          echo "===== Phase 5.2: Parallel Delta-Crosscoder sweep on 8 GPUs ====="
+          # User has hard 9am deadline tomorrow; maximize GPU usage by training
+          # 8 crosscoder configs in parallel instead of one sequentially.
+          # lambda_delta sweep (spec-prescribed) at k=100, then 2 variance/k checks.
+
+          CC_CKPT_ROOT=/data/aniruddhan/checkpoints/agent-lens-phase5
+          mkdir -p "$CC_CKPT_ROOT"
+          export CC_RUN_NAME_BASE=delta-cc-llama3.1-8b-webrl
+
+          train_one() {
+            local gpu="$1" lambda="$2" k="$3" seed="$4" tag="$5"
+            CUDA_VISIBLE_DEVICES="$gpu" \
+              CC_LAMBDA_DELTA="$lambda" CC_K="$k" CC_RUN_NAME="${CC_RUN_NAME_BASE}-${tag}" \
+              bash run/generic/train-delta-crosscoder.sh \
+                --seed "$seed" \
+                --disable-wandb \
+              > "$LOGDIR/train-${tag}.log" 2>&1 &
+            echo "  GPU $gpu  → PID=$!  lambda=$lambda k=$k seed=$seed tag=$tag"
+          }
+
+          # lambda_delta sweep at k=100
+          train_one 0 0.0 100 42 lambda0.0
+          train_one 1 0.5 100 42 lambda0.5
+          train_one 2 1.0 100 42 lambda1.0
+          train_one 3 2.0 100 42 lambda2.0
+          train_one 4 5.0 100 42 lambda5.0
+          # variance check
+          train_one 5 1.0 100 43 lambda1.0-seed43
+          # k sweep at lambda=1.0
+          train_one 6 1.0  50 42 lambda1.0-k50
+          train_one 7 1.0 200 42 lambda1.0-k200
+
+          echo
+          echo "Waiting for all 8 training jobs..."
+          wait
+          echo "===== training sweep done ====="
+
+          echo
+          echo "===== Phase 5.3: Latent scalers per crosscoder ====="
+          # Run scalers sequentially on GPU 0 (each takes ~5 min; cheaper than parallel)
+          for tag in lambda0.0 lambda0.5 lambda1.0 lambda2.0 lambda5.0 lambda1.0-seed43 lambda1.0-k50 lambda1.0-k200; do
+            cc_path=$(find /data/aniruddhan -path "*${CC_RUN_NAME_BASE}-${tag}*" -name "model_final.pt" 2>/dev/null | head -1)
+            if [[ -z "$cc_path" ]]; then
+              echo "  [skip] no model_final for $tag"
+              continue
+            fi
+            echo "  [scalers] $tag → $cc_path"
+            CUDA_VISIBLE_DEVICES=0 \
+              python scripts/compute_scalers.py \
+                --crosscoder "$cc_path" \
+                --base-model "$CC_BASE_MODEL" \
+                --chat-model "$CC_CHAT_MODEL" \
+                --layer "$CC_LAYER" \
+                --activation-store-dir "$CC_ACTIVATION_DIR" \
+                --addon "${tag}" \
+              > "$LOGDIR/scalers-${tag}.log" 2>&1 || echo "    [warn] scalers failed for $tag"
+          done
+
+          echo
+          echo "===== Phase 5.4: Export artifacts to S3 ====="
+          # Push everything we care about to S3 before the cluster access expires.
+          # See https://oumi-science-donotdelete.s3 for the destination layout.
+          S3_DEST=s3://oumi-science-donotdelete/ani/agent-lens/phase5-$(date +%Y%m%d)
+          echo "  destination: $S3_DEST"
+          if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "  AWS auth OK; syncing..."
+            # crosscoder checkpoints (small per model, total ~few GB)
+            aws s3 sync /data/aniruddhan/checkpoints/agent-lens-phase5 "$S3_DEST/crosscoders" --exclude '*.tmp' || true
+            # scaler outputs (~10s of MB)
+            aws s3 sync /data/aniruddhan/results "$S3_DEST/results" --exclude '*.memmap' || true
+            # SFT model (15 GB)
+            aws s3 sync /data/ani/agent-lens/checkpoints/web_llama "$S3_DEST/web_llama" || true
+            # logs
+            aws s3 sync /data/ani/agent-lens/logs "$S3_DEST/logs" || true
+            # agent-lens repo state
+            aws s3 sync /data/ani/agent-lens/agent-lens-repo "$S3_DEST/agent-lens-repo" --exclude '.git/*' || true
+            # results (eval JSONs)
+            echo "  S3 export done."
+          else
+            echo "  [!] AWS auth NOT available. Skipping S3 sync."
+            echo "  [!] User must kubectl cp artifacts before pod expires."
+          fi
+
+          echo
+          echo "[$(date)] Phase 5 complete."
+          du -sh /data/aniruddhan/checkpoints/agent-lens-phase5/ 2>/dev/null || true
+        resources:
+          requests:
+            nvidia.com/gpu: 8
+            cpu: "16"
+            memory: "200Gi"
+            ephemeral-storage: "100Gi"
+          limits:
+            nvidia.com/gpu: 8
+            cpu: "32"
+            memory: "400Gi"
+            ephemeral-storage: "200Gi"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: shm
+          mountPath: /dev/shm
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: pvc-oumi-science
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+      tolerations:
+      - key: "nvidia.com/gpu"
+        value: "true"
+        operator: "Equal"
+        effect: "NoSchedule"

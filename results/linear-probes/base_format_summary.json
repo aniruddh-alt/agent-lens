@@ -1,0 +1,18 @@
+{
+  "tag": "base",
+  "layers": [
+    8,
+    12,
+    16,
+    20,
+    24
+  ],
+  "transformers": "5.9.0",
+  "chat_vs_tool_heldout_auc_by_layer": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ]
+}

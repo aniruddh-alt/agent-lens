@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+.claude/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local data and model artifacts (these live on the cluster, not in git)
+data/
+checkpoints/
+outputs/
+wandb/
+logs/
+*.bin
+*.safetensors
+*.pt
+*.ckpt
+
+# Probe/crosscoder artifacts (regenerate via scripts)
+*.npz
+
+# Cluster / kube
+*.kubeconfig
+.kube/
+
+# Credentials
+.env.local
+*.pem
+*.key
+
+# Internal / scratch (not part of published repo)
+results/agentic_generalization/
+datasets/agentic_generalization/
+jobs/
+research.html
+research.md

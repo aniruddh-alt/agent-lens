@@ -1,0 +1,40 @@
+[project]
+name = "agent-lens"
+version = "0.0.1"
+description = "Mechanistic analysis of misalignment induced by agentic finetuning"
+authors = [{ name = "Aniruddhan Ramesh", email = "ani@oumi.ai" }]
+requires-python = ">=3.10"
+readme = "README.md"
+
+# We deliberately keep deps minimal here — the heavy ML stack (torch, transformers, trl, oumi,
+# accelerate, deepspeed, peft, datasets, wandb) is installed from the oumi container image.
+# This pyproject is for local dev: data download, conversion, small analysis scripts.
+dependencies = [
+  "datasets>=2.20",
+  "huggingface_hub>=0.24",
+  "transformers>=4.46",
+  "torch>=2.4",
+  "numpy<2.1",
+  "pandas",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "pytest",
+  "ipykernel",
+  "matplotlib",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["data*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

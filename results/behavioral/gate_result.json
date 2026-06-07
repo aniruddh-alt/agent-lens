@@ -1,0 +1,26 @@
+{
+  "gate1_agentharm_vs_general_3x": false,
+  "gate1_metrics": {
+    "max_rms_ah": 1.8351765422077921,
+    "max_rms_gen": 1.03697265625,
+    "ratio": 1.7697443911822457
+  },
+  "gate2_locality": true,
+  "gate2_metrics": {
+    "peak_layer": 31,
+    "band": [
+      27,
+      31
+    ],
+    "locality_ratio": 0.570532068113898
+  },
+  "gate3_layer_signal_1.5x_median": true,
+  "gate3_metrics": {
+    "max_rms_ah": 1.8351765422077921,
+    "median_rms_ah": 0.09001575816761365,
+    "max_cos_drift_ah": 0.37413758116883117,
+    "median_cos_drift_ah": 0.17456371753246752
+  },
+  "overall_pass": false,
+  "recommended_layer": 31
+}
